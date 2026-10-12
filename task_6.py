@@ -4,7 +4,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from typing import TypedDict, Annotated
 import operator
 from langgraph.graph import StateGraph, START, END
-from prompts import SCI_PROMPT, ORCH_PROMPT, TASK_5, EXEC_PROMPT, GEN_PROMPT
+from task_5.prompts import SCI_PROMPT, ORCH_PROMPT, TASK_5, EXEC_PROMPT, GEN_PROMPT
 
 import subprocess, sys, os, re
 
