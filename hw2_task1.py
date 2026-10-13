@@ -8,34 +8,43 @@ from prompts_hw2 import SCI_PROMPT, ORCH_PROMPT, TASK_5, EXEC_PROMPT, GEN_PROMPT
 from langgraph.types import interrupt, Command
 from langgraph.checkpoint.memory import InMemorySaver
 import subprocess, sys, os, re
-
+import os
+from langchain_openai import ChatOpenAI
+from langchain_core import OutputParserException
 
 from langchain_core.rate_limiters import InMemoryRateLimiter
 
 limiter = InMemoryRateLimiter(
-    requests_per_second=4 / 60,   # 4 calls per minute, safely under the limit of 5
+    requests_per_second=4 / 60,   
     check_every_n_seconds=1,
     max_bucket_size=1,
 )
 
-llm = ChatGoogleGenerativeAI(
-    model="gemini-3.8-flash",
+llm = ChatOpenAI(
+    model="nvidia/nemotron-3-ultra-550b-a55b:free",         
+    base_url="https://openrouter.ai/api/v1",
     temperature=0,
     rate_limiter=limiter,
-    max_retries=6,                # if a 429 still slips through, wait and try again
+    max_retries=6,
+    extra_body={
+        "models": [
+            "nvidia/nemotron-3-ultra-550b-a55b:free",
+            "openrouter/free",   
+        ],
+    }                             
 )
 
-WORKDIR = os.path.abspath("agent_work")          # the executor's working folder
-DATA_PATH = os.path.abspath("data.csv")          # absolute path, so the script finds it from anywhere
+WORKDIR = os.path.abspath("agent_work")         
+DATA_PATH = os.path.abspath("data.csv")          
 os.makedirs(WORKDIR, exist_ok=True)
 
 def write_file(filename, code):
-    path = os.path.join(WORKDIR, os.path.basename(filename))   # basename: can't write outside the folder
+    path = os.path.join(WORKDIR, os.path.basename(filename))   
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(code)
     return path
 
-def run_python(path, timeout=300):                 # 300 s = the 5-minute limit
+def run_python(path, timeout=300):                 
     try:
         r = subprocess.run([sys.executable, path], cwd=WORKDIR,
                            capture_output=True, text=True, timeout=timeout)
@@ -43,7 +52,6 @@ def run_python(path, timeout=300):                 # 300 s = the 5-minute limit
     except subprocess.TimeoutExpired as e:
         return -1, (e.stdout or "") if isinstance(e.stdout, str) else "", "TIMEOUT: script ran longer than 5 minutes"
 
-# 1) STATE: the shared notebook
 class Decision(BaseModel):
     next_role: Literal["scientist", "general", "executor", "human", "finish"]
     instruction: str = Field(description="What the chosen role should do next")
@@ -54,7 +62,9 @@ class Decision(BaseModel):
                     "'none' for an ambiguous query.")
     reason: str = Field(description="One sentence explaining the choice")
 
-decider = llm.with_structured_output(Decision)
+decider = llm.with_structured_output(Decision, method="function_calling").with_retry(
+    retry_if_exception_type=(ValueError,),
+    stop_after_attempt=3,)
 
 class State(TypedDict):
     dialogue: Annotated[list, operator.add]
@@ -73,7 +83,7 @@ class Script(BaseModel):
     filename: str = Field(description="e.g. solve_task5.py")
     code: str = Field(description="The complete Python script")
 
-coder = llm.with_structured_output(Script)
+coder = llm.with_structured_output(Script, method="function_calling")
 
 def orchestrator(state):
     files = ", ".join(sorted(os.listdir(WORKDIR))) or "(none)"
@@ -92,20 +102,20 @@ def orchestrator(state):
 ACCEPT = ("y", "yes", "ok", "accept", "proceed", "go")
 
 def human(state) -> Command[Literal["orchestrator", "executor", "__end__"]]:
-    # The graph pauses here until you resume the same thread with your reply.
+    
     reply = interrupt({"question": state["question"],
                        "pending_action": state["pending_action"]})
 
     turns = [{"role": "human", "text": reply}]
     pending = state["pending_action"]
 
-    if pending == "none":                       # ambiguous query: the orchestrator reads the answer
+    if pending == "none":                       
         return Command(update={"dialogue": turns}, goto="orchestrator")
 
-    if reply.strip().lower().startswith(ACCEPT):  # hard decision accepted: the step runs
+    if reply.strip().lower().startswith(ACCEPT):  
         return Command(update={"dialogue": turns}, goto=END if pending == "finish" else pending)
 
-    # refused: the step does NOT run, and the turn returns to the orchestrator
+    
     turns.append({"role": "system", "text": f"The step '{pending}' was refused by the human and did not run."})
     return Command(update={"dialogue": turns, "pending_action": "none"}, goto="orchestrator")
 
