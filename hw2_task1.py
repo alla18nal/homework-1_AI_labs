@@ -10,7 +10,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 import subprocess, sys, os, re
 import os
 from langchain_openai import ChatOpenAI
-from langchain_core import OutputParserException
+
 
 from langchain_core.rate_limiters import InMemoryRateLimiter
 
@@ -20,18 +20,25 @@ limiter = InMemoryRateLimiter(
     max_bucket_size=1,
 )
 
-llm = ChatOpenAI(
-    model="nvidia/nemotron-3-ultra-550b-a55b:free",         
-    base_url="https://openrouter.ai/api/v1",
+# llm = ChatOpenAI(
+#     model="nvidia/nemotron-3-ultra-550b-a55b:free",         
+#     base_url="https://openrouter.ai/api/v1",
+#     temperature=0,
+#     rate_limiter=limiter,
+#     max_retries=6,
+#     extra_body={
+#         "models": [
+#             "nvidia/nemotron-3-ultra-550b-a55b:free",
+#             "openrouter/free",   
+#         ],
+#     },
+#     api_key=os.environ["OPENROUTER_API_KEY"]                             
+# )
+llm = ChatGoogleGenerativeAI(
+    model="gemini-3.5-flash-lite",
     temperature=0,
     rate_limiter=limiter,
-    max_retries=6,
-    extra_body={
-        "models": [
-            "nvidia/nemotron-3-ultra-550b-a55b:free",
-            "openrouter/free",   
-        ],
-    }                             
+    max_retries=6,                
 )
 
 WORKDIR = os.path.abspath("agent_work")         
@@ -62,7 +69,7 @@ class Decision(BaseModel):
                     "'none' for an ambiguous query.")
     reason: str = Field(description="One sentence explaining the choice")
 
-decider = llm.with_structured_output(Decision, method="function_calling").with_retry(
+decider = llm.with_structured_output(Decision).with_retry(
     retry_if_exception_type=(ValueError,),
     stop_after_attempt=3,)
 
@@ -83,7 +90,7 @@ class Script(BaseModel):
     filename: str = Field(description="e.g. solve_task5.py")
     code: str = Field(description="The complete Python script")
 
-coder = llm.with_structured_output(Script, method="function_calling")
+coder = llm.with_structured_output(Script)
 
 def orchestrator(state):
     files = ", ".join(sorted(os.listdir(WORKDIR))) or "(none)"
@@ -187,7 +194,7 @@ def run(request, thread_id):
         state = app.invoke(Command(resume=reply), config)   # resume the SAME thread
     return state
 
-result = run(TASK_5 + "\n\nREQUEST: Report some metric of the model.", "run-a")
+result = run(TASK_5 + "\n\nREQUEST: Solve the task but I want a different metric than RMSE", "run-a")
 
 for turn in result["dialogue"]:
     print(turn["role"], ":", turn["text"])
